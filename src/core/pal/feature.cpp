@@ -773,8 +773,7 @@ int FeaturePart::createCandidatesAlongLineNearStraightSegments( QList<LabelPosit
       {
         // find out whether the line direction for this candidate is from right to left
         bool isRightToLeft = ( angle > M_PI / 2 || angle <= -M_PI / 2 );
-        // meaning of above/below may be reversed if using line position dependent orientation
-        // and the line has right-to-left direction
+        // meaning of above/below may be reversed if using map orientation and the line has right-to-left direction
         bool reversed = (( flags & FLAG_MAP_ORIENTATION ) ? isRightToLeft : false );
         bool aboveLine = ( !reversed && ( flags & FLAG_ABOVE_LINE ) ) || ( reversed && ( flags & FLAG_BELOW_LINE ) );
         bool belowLine = ( !reversed && ( flags & FLAG_BELOW_LINE ) ) || ( reversed && ( flags & FLAG_ABOVE_LINE ) );
@@ -919,8 +918,7 @@ int FeaturePart::createCandidatesAlongLineNearMidpoint( QList<LabelPosition*>& l
     {
       // find out whether the line direction for this candidate is from right to left
       bool isRightToLeft = ( angle > M_PI / 2 || angle <= -M_PI / 2 );
-      // meaning of above/below may be reversed if using line position dependent orientation
-      // and the line has right-to-left direction
+      // meaning of above/below may be reversed if using map orientation and the line has right-to-left direction
       bool reversed = (( flags & FLAG_MAP_ORIENTATION ) ? isRightToLeft : false );
       bool aboveLine = ( !reversed && ( flags & FLAG_ABOVE_LINE ) ) || ( reversed && ( flags & FLAG_BELOW_LINE ) );
       bool belowLine = ( !reversed && ( flags & FLAG_BELOW_LINE ) ) || ( reversed && ( flags & FLAG_ABOVE_LINE ) );
@@ -968,7 +966,7 @@ int FeaturePart::createCandidatesAlongLineNearMidpoint( QList<LabelPosition*>& l
 }
 
 
-LabelPosition* FeaturePart::curvedPlacementAtOffset( PointSet* path_positions, double* path_distances, int& orientation, int index, double distance, bool& flip )
+LabelPosition* FeaturePart::curvedPlacementAtOffset( PointSet* path_positions, double* path_distances, int& orientation, int index, double distance, bool& reversed, bool& flip )
 {
   // Check that the given distance is on the given index and find the correct index and distance if not
   while ( distance < 0 && index > 1 )
@@ -1016,15 +1014,21 @@ LabelPosition* FeaturePart::curvedPlacementAtOffset( PointSet* path_positions, d
   LabelPosition* slp_tmp = nullptr;
   double angle = atan2( -dy, dx );
 
-  bool orientation_forced = ( orientation != 0 ); // Whether the orientation was set by the caller
-  if ( !orientation_forced )
-    orientation = ( angle > 0.55 * M_PI || angle < -0.45 * M_PI ? -1 : 1 );
+  if ( orientation == 0 )       // Must be map orientation
+  {
+    bool isRightToLeft = ( angle > 0.55 * M_PI || angle < -0.45 * M_PI );
+    reversed = isRightToLeft;
+    orientation = isRightToLeft ? -1 : 1;
+  }
 
-  if ( !isUprightLabel() )
+  if ( !showUprightLabels() )
   {
     if ( orientation != 1 )
+    {
       flip = true;   // Report to the caller, that the orientation is flipped
-    orientation = 1;
+      reversed = !reversed;
+      orientation = 1;
+    }
   }
 
   for ( int i = 0; i < li->char_num; i++ )
@@ -1144,7 +1148,7 @@ LabelPosition* FeaturePart::curvedPlacementAtOffset( PointSet* path_positions, d
     while ( render_angle < 0 ) render_angle += 2 * M_PI;
 
     if ( render_angle > M_PI / 2 && render_angle < 1.5 * M_PI )
-      slp->incrUpsideDownCharCount();
+      slp->incrementUpsideDownCharCount();
   }
   // END FOR
 
@@ -1201,53 +1205,42 @@ int FeaturePart::createCurvedCandidatesAlongLine( QList< LabelPosition* >& lPos,
   else
     lineAngle = atan2( ey - by, ex - bx );
 
-  // find out whether the line direction for this candidate is from right to left
-  bool isRightToLeft = ( lineAngle > M_PI / 2 || lineAngle <= -M_PI / 2 );
-
   QLinkedList<LabelPosition*> positions;
   double delta = qMax( li->label_height, total_distance / mLF->layer()->pal->line_p );
 
   unsigned long flags = mLF->layer()->arrangementFlags();
   if ( flags == 0 )
     flags = FLAG_ON_LINE; // default flag
-  // placements may need to be reversed if using line position dependent orientation
-  // and the line has right-to-left direction
-  bool reversed = (( flags & FLAG_MAP_ORIENTATION ) ? isRightToLeft : false );
-
-  // an orientation of 0 means try both orientations and choose the best
-  int orientation = 0;
-  if ( !( flags & FLAG_MAP_ORIENTATION ) )
-  {
-    //... but if we are using line orientation flags, then we can only accept a single orientation,
-    // as we need to ensure that the labels fall inside or outside the polyline or polygon (and not mixed)
-    orientation = reversed ? -1 : 1;
-  }
 
   // generate curved labels
-  for ( int i = 0; i*delta < total_distance; i++ )
+  for ( int i = 0; i * delta < total_distance; i++ )
   {
     bool flip = false;
-    bool orientation_forced = ( orientation != 0 ); // Whether the orientation was set by the caller
-    LabelPosition* slp = curvedPlacementAtOffset( mapShape, path_distances, orientation, 1, i * delta, flip );
+    // placements may need to be reversed if using map orientation and the line has right-to-left direction
+    bool reversed = false;
+    
+    // an orientation of 0 means try both orientations and choose the best
+    int orientation = 0;
+    if ( !( flags & FLAG_MAP_ORIENTATION ) )
+    {
+      //... but if we are using line orientation flags, then we can only accept a single orientation,
+      // as we need to ensure that the labels fall inside or outside the polyline or polygon (and not mixed)
+      orientation = 1;
+    }
+
+    LabelPosition* slp = curvedPlacementAtOffset( mapShape, path_distances, orientation, 1, i * delta, reversed, flip );
     if ( slp == nullptr )
       continue;
 
     // If we placed too many characters upside down
-    if ( slp->getUpsideDownCharCount() >= li->char_num / 2.0 )
+    if ( slp->upsideDownCharCount() >= li->char_num / 2.0 )
     {
-      // if we auto-detected the orientation then retry with the opposite orientation
-      if ( !orientation_forced )
+      // if labels should be shown upright then retry with the opposite orientation
+      if ( ( showUprightLabels() && !flip ) )
       {
-        orientation = -orientation;
         delete slp;
-        slp = curvedPlacementAtOffset( mapShape, path_distances, orientation, 1, i * delta, flip );
-      }
-      else if ( isUprightLabel() && !flip )
-      {
-        // Retry with the opposite orientation
         orientation = -orientation;
-        delete slp;
-        slp = curvedPlacementAtOffset( mapShape, path_distances, orientation, 1, i * delta, flip );
+        slp = curvedPlacementAtOffset( mapShape, path_distances, orientation, 1, i * delta, reversed, flip );
       }
     }
     if ( slp == nullptr )
@@ -1772,8 +1765,7 @@ double FeaturePart::calculatePriority() const
   return mLF->priority() >= 0 ? mLF->priority() : mLF->layer()->priority();
 }
 
-// Returns whether a label must be displayed upright
-bool FeaturePart::isUprightLabel() const
+bool FeaturePart::showUprightLabels() const
 {
   bool uprightLabel = false;
 
@@ -1784,7 +1776,7 @@ bool FeaturePart::isUprightLabel() const
       break;
     case Layer::ShowDefined:
       // upright only dynamic labels
-      if ( !getFixedRotation() || ( !getFixedPosition() && getLabelAngle() == 0.0 ) )
+      if ( !hasFixedRotation() || ( !hasFixedPosition() && fixedAngle() == 0.0 ) )
       {
         uprightLabel = true;
       }
