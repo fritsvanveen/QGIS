@@ -1016,14 +1016,85 @@ LabelPosition* FeaturePart::curvedPlacementAtOffset( PointSet* path_positions, d
 
   if ( orientation == 0 )       // Must be map orientation
   {
-    bool isRightToLeft = ( angle > 0.55 * M_PI || angle < -0.45 * M_PI );
+    // Calculate the orientation based on the angle of the path segment under consideration
+
+    double _distance = distance;
+    int endindex = index;
+    double _dx = dx;
+    double _dy = dy;
+    double _old_x = old_x;
+    double _old_y = old_y;
+    double _new_x = new_x;
+    double _new_y = new_y;
+    for ( int i = 0; i < li->char_num; i++ )
+    {
+      // grab the next character according to the orientation
+      LabelInfo::CharacterInfo& ci = li->char_info[i];
+
+      // Coordinates this character will start at
+      double segment_length = path_distances[index];
+      if ( qgsDoubleNear( segment_length, 0.0 ) )
+      {
+        // Not allowed to place across on 0 length segments or discontinuities
+        delete slp;
+        return nullptr;
+      }
+
+      double start_x = _old_x + _dx * _distance / segment_length;
+      double start_y = _old_y + _dy * _distance / segment_length;
+      // Coordinates this character ends at, calculated below
+      double end_x = 0;
+      double end_y = 0;
+
+      if ( segment_length - _distance  >= ci.width )
+      {
+        // if the distance remaining in this segment is enough, we just go further along the segment
+        _distance += ci.width;
+        end_x = _old_x + _dx * _distance / segment_length;
+        end_y = _old_y + _dy * _distance / segment_length;
+      }
+      else
+      {
+        // If there isn't enough distance left on this segment
+        // then we need to search until we find the line segment that ends further than ci.width away
+        do
+        {
+          _old_x = _new_x;
+          _old_y = _new_y;
+          endindex++;
+          if ( endindex >= path_positions->nbPoints ) // Bail out if we run off the end of the shape
+          {
+            delete slp;
+            return nullptr;
+          }
+          _new_x = path_positions->x[endindex];
+          _new_y = path_positions->y[endindex];
+          _dx = _new_x - _old_x;
+          _dy = _new_y - _old_y;
+        }
+        while ( sqrt( pow( start_x - _new_x, 2 ) + pow( start_y - _new_y, 2 ) ) < ci.width ); // Distance from start_ to new_
+
+        // Calculate the position to place the end of the character on
+        GeomFunction::findLineCircleIntersection( start_x, start_y, ci.width, _old_x, _old_y, _new_x, _new_y, end_x, end_y );
+
+        // Need to calculate distance on the new segment
+        _distance = sqrt( pow( _old_x - end_x, 2 ) + pow( _old_y - end_y, 2 ) );
+      }
+    }
+
+    // Determine the angle of the path segment under consideration
+    _dx = path_positions->x[endindex] - path_positions->x[index];
+    _dy = path_positions->y[endindex] - path_positions->y[index];
+    double line_angle = atan2( -_dy, _dx );
+
+    bool isRightToLeft = ( line_angle > 0.55 * M_PI || line_angle < -0.45 * M_PI );
     reversed = isRightToLeft;
     orientation = isRightToLeft ? -1 : 1;
   }
 
   if ( !showUprightLabels() )
   {
-    if ( orientation != 1 )
+    if ( orientation < 0 )
     {
       flip = true;   // Report to the caller, that the orientation is flipped
       reversed = !reversed;
@@ -1039,6 +1110,7 @@ LabelPosition* FeaturePart::curvedPlacementAtOffset( PointSet* path_positions, d
     LabelInfo::CharacterInfo& ci = ( orientation > 0 ? li->char_info[i] : li->char_info[li->char_num-i-1] );
 
     // Coordinates this character will start at
+    double segment_length = path_distances[index];
     if ( qgsDoubleNear( segment_length, 0.0 ) )
     {
       // Not allowed to place across on 0 length segments or discontinuities
@@ -1077,7 +1149,6 @@ LabelPosition* FeaturePart::curvedPlacementAtOffset( PointSet* path_positions, d
         new_y = path_positions->y[index];
         dx = new_x - old_x;
         dy = new_y - old_y;
-        segment_length = path_distances[index];
       }
       while ( sqrt( pow( start_x - new_x, 2 ) + pow( start_y - new_y, 2 ) ) < ci.width ); // Distance from start_ to new_
 
